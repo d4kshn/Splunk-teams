@@ -1,0 +1,383 @@
+{
+  "name": "Splunk daily license usage → Teams chat (scheduled pull)",
+  "nodes": [
+    {
+      "id": "c3a85a03-87c2-4c76-9c3a-f93ec6811d4d",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        -500
+      ],
+      "parameters": {
+        "width": 700,
+        "height": 440,
+        "content": "## Splunk license usage → Teams chat (scheduled pull)\nEvery day at 07:00 n8n runs the license search through Splunk's REST API, drafts the message and posts it to a Teams chat. Nothing calls into n8n, so the SSO in front of n8n doesn't matter.\n\n**Setup**\n1. **Run license search** + **Get search results**: create a *Splunk API* credential. Base URL = Splunk's management API, e.g. `https://splunk.example.com:8089`. Auth Token = a Splunk authentication token for a user that can search `_internal`. Turn on *Allow Self-Signed Certificates* if port 8089 still uses Splunk's default certificate.\n2. **Post to Teams chat**: create a *Microsoft Teams OAuth2* credential (it posts as the account that signs in), then pick the chat.\n3. **Settings**: `threshold_gb` = daily threshold (10 GB). Optional `splunk_web_url` (e.g. `https://splunk.example.com:8000`) adds a \"Run the search in Splunk\" link.\n4. **Every day at 07:00**: set your time. The timezone is in Workflow settings (now America/New_York).\n5. Disable the old Splunk alert so it doesn't post a second message later.\n\nSplunk or Teams errors and unexpected search results mark the execution as failed."
+      }
+    },
+    {
+      "id": "7999fe54-2cf9-4993-b02d-31ebb7aedb52",
+      "name": "Every day at 07:00",
+      "notes": "Runs daily at 07:00 in the workflow's timezone (Workflow settings). If n8n is down at that time, the missed run executes once when it's back.",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        },
+        "misfirePolicy": "coalesce"
+      }
+    },
+    {
+      "id": "130e8a9f-2375-44d4-9905-9233218bb2f7",
+      "name": "Settings",
+      "notes": "All settings in one place. The REST API needs the query to start with \"search\". splunk_web_url is optional: leave it empty for no link.",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2775a3e8-e541-4138-b3d4-94954153e7a3",
+              "name": "splunk_query",
+              "value": "search index=_internal source=*license_usage.log type=Usage earliest=-1d@d latest=@d\n| stats sum(b) as total_bytes count as usage_events\n| addinfo\n| eval report_date=strftime(info_min_time, \"%Y-%m-%d\")\n| eval ingestion_gb=round(total_bytes/1024/1024/1024,2)\n| table report_date ingestion_gb usage_events",
+              "type": "string"
+            },
+            {
+              "id": "52b6806f-f697-49ce-9777-7b85061efbc6",
+              "name": "threshold_gb",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "2d47e512-bd9b-4de5-afe9-48ddcb069e64",
+              "name": "splunk_web_url",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "2453df23-288c-4b4f-8955-cf37d98d2e9c",
+      "name": "Run license search",
+      "notes": "Runs the search through Splunk's REST API and waits for it to finish (exec_mode blocking). Needs a Splunk API credential.",
+      "type": "n8n-nodes-base.splunk",
+      "typeVersion": 2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "resource": "search",
+        "operation": "create",
+        "search": "={{ $json.splunk_query }}",
+        "additionalFields": {
+          "exec_mode": "blocking"
+        }
+      }
+    },
+    {
+      "id": "8f384f78-2c92-4bd3-b771-07bd553d6f28",
+      "name": "Get search results",
+      "notes": "Reads the finished job's results; the row is results[0].",
+      "type": "n8n-nodes-base.splunk",
+      "typeVersion": 2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "resource": "search",
+        "operation": "getResult",
+        "searchJobId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "returnAll": false,
+        "limit": 10,
+        "filters": {},
+        "options": {}
+      }
+    },
+    {
+      "id": "805648bf-4e29-41c8-add7-cf6b429257ab",
+      "name": "Valid search result?",
+      "notes": "report_date must be YYYY-MM-DD. ingestion_gb must be numeric; empty (no usage that day) counts as 0.",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e589afd3-61ea-40ef-8778-2a3833c676e8",
+              "leftValue": "={{ /^\\d\\d\\d\\d-\\d\\d-\\d\\d$/.test($json.results?.[0]?.report_date ?? '') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "dcf30b60-4b4f-4c3d-8952-8221459153dd",
+              "leftValue": "={{ Number.isFinite(Number($json.results?.[0]?.ingestion_gb || 0)) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e3a569e6-781b-4a5a-a589-68aef8909453",
+      "name": "Parse search values",
+      "notes": "Turns Splunk's string values into typed fields, adds the threshold, and builds the optional Splunk link.",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        1100,
+        -100
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6cd51dab-f8a1-4ecc-8531-2f6f25a0fd36",
+              "name": "report_date",
+              "value": "={{ $json.results[0].report_date }}",
+              "type": "string"
+            },
+            {
+              "id": "eb3374b7-90cc-4317-b63d-c79e3d80dd99",
+              "name": "ingestion_gb",
+              "value": "={{ Number($json.results[0].ingestion_gb || 0) }}",
+              "type": "number"
+            },
+            {
+              "id": "625ea8fe-6ef5-44b7-b9f3-263fab7b661c",
+              "name": "threshold_gb",
+              "value": "={{ $('Settings').first().json.threshold_gb }}",
+              "type": "number"
+            },
+            {
+              "id": "6c8952b9-5387-482f-a6a8-11b6b7fee8f1",
+              "name": "splunk_search_url",
+              "value": "={{ $('Settings').first().json.splunk_web_url ? $('Settings').first().json.splunk_web_url.replace(/\\/+$/, '') + '/app/search/search?q=' + encodeURIComponent($('Settings').first().json.splunk_query) : '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "5420d297-3c06-476d-b53d-3a20a11bed0a",
+      "name": "Draft Teams message",
+      "notes": "Builds the Teams message (HTML). Edit the wording here.",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        1320,
+        -100
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ba3a9af0-b69a-449a-817e-769155d3f5b3",
+              "name": "message_html",
+              "value": "=<p><b>Splunk license usage: {{ $json.report_date }}</b></p><p>Ingestion: <b>{{ $json.ingestion_gb.toFixed(2) }} GB</b> ({{ ($json.ingestion_gb / $json.threshold_gb * 100).toFixed(1) }}% of the {{ $json.threshold_gb }} GB daily threshold){{ $json.ingestion_gb > $json.threshold_gb ? '<br>⚠️ <b>Over the ' + $json.threshold_gb + ' GB daily threshold</b>' : '' }}</p>{{ $json.splunk_search_url ? '<p><a href=\"' + $json.splunk_search_url + '\">Run the search in Splunk</a></p>' : '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "04725776-fa7b-4f4f-b4d5-9c31671bf0a1",
+      "name": "Post to Teams chat",
+      "notes": "Needs a Microsoft Teams OAuth2 credential (delegated: posts as the signed-in account). Pick the chat after connecting it.",
+      "type": "n8n-nodes-base.microsoftTeams",
+      "typeVersion": 2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        1540,
+        -100
+      ],
+      "parameters": {
+        "authentication": "microsoftTeamsOAuth2Api",
+        "resource": "chatMessage",
+        "operation": "create",
+        "chatId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "contentType": "html",
+        "message": "={{ $json.message_html }}",
+        "options": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "webhookId": "440e6b25-cbaa-4890-8078-e5cc204bbe17"
+    },
+    {
+      "id": "f8761178-8b7e-4aae-b3bf-ddbdcdf9d525",
+      "name": "Fail: unexpected search result",
+      "notes": "Marks the run as failed so it shows red and triggers the instance's error workflow.",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        140
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=Splunk's license search returned no usable row, so no Teams message was sent. Expected report_date as YYYY-MM-DD and a numeric ingestion_gb. Received results: {{ JSON.stringify($json.results ?? null).slice(0, 500) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Every day at 07:00": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Run license search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run license search": {
+      "main": [
+        [
+          {
+            "node": "Get search results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get search results": {
+      "main": [
+        [
+          {
+            "node": "Valid search result?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid search result?": {
+      "main": [
+        [
+          {
+            "node": "Parse search values",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail: unexpected search result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse search values": {
+      "main": [
+        [
+          {
+            "node": "Draft Teams message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Teams message": {
+      "main": [
+        [
+          {
+            "node": "Post to Teams chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "pinData": {}
+}
