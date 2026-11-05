@@ -1,0 +1,10 @@
+```Manual test: runs the daily license search now and fires Splunk's Webhook alert action, so n8n receives the same payload a scheduled alert sends.```
+```Before running: replace <your-n8n-host> and CHANGE-ME with your n8n host and the workflow's webhook path. Running it posts a real message to the Teams chat.```
+```To test the over-threshold warning with made-up numbers, replace everything above the sendalert line with: | makeresults | eval report_date="2026-11-04", ingestion_gb="12.34", usage_events="1" | table report_date ingestion_gb usage_events```
+index=_internal source=*license_usage.log type=Usage earliest=-1d@d latest=@d
+| stats sum(b) as total_bytes count as usage_events
+| addinfo
+| eval report_date=strftime(info_min_time, "%Y-%m-%d")
+| eval ingestion_gb=round(total_bytes/1024/1024/1024,2)
+| table report_date ingestion_gb usage_events
+| sendalert webhook param.url="https://<your-n8n-host>/webhook/splunk-license-usage-CHANGE-ME"
