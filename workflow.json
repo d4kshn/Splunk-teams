@@ -1,0 +1,388 @@
+{
+  "name": "Splunk daily license usage → Teams chat",
+  "nodes": [
+    {
+      "id": "e3e339ce-3505-4990-9198-f630ff03a32f",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        -440
+      ],
+      "parameters": {
+        "width": 620,
+        "height": 420,
+        "content": "## Splunk license usage → Teams chat\nSplunk's daily alert POSTs its first result row here. The workflow drafts an HTML message and posts it to a Teams chat.\n\n**Setup**\n1. **Post to Teams chat**: create a *Microsoft Teams OAuth2* credential (it posts as the account that signs in), then pick the chat.\n2. **Parse alert values → threshold_gb** = daily threshold (10 GB). The % and the ⚠️ line use it.\n3. **Splunk alert webhook → Path**: replace `CHANGE-ME` with a long random string (e.g. `openssl rand -hex 12`). Splunk can't send a password, so the path is the webhook's only secret.\n4. **Splunk alert**: add the *Webhook* action with this trigger's **Production URL**.\n5. Recommended: **Splunk alert webhook → Options → IP(s) Allowlist** = your Splunk search head IP(s).\n\n**Responses to Splunk**: 200 posted · 400 bad payload · 502 Teams failed. Both failure paths also mark the execution as failed."
+      }
+    },
+    {
+      "id": "859f4ccb-2e18-4a10-b753-59c7214289cc",
+      "name": "Splunk alert webhook",
+      "webhookId": "6a1e2e0f-569f-40f0-abf1-1bf7f73342a0",
+      "notes": "Splunk's built-in Webhook alert action POSTs JSON: { result: {report_date, ingestion_gb, usage_events}, results_link, search_name, sid, app, owner }. Every result value arrives as a string.",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "splunk-license-usage-CHANGE-ME",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "61311f58-845e-43c3-bf24-e99c67c350dc",
+      "name": "Valid Splunk payload?",
+      "notes": "report_date must be YYYY-MM-DD. ingestion_gb must be numeric; empty (no usage that day) counts as 0.",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4cb0e2a4-e8c6-4ed9-b036-ec62db2bd6c9",
+              "leftValue": "={{ /^\\d\\d\\d\\d-\\d\\d-\\d\\d$/.test($json.body?.result?.report_date ?? '') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "fb8f503a-4138-4a62-9aa6-cd7a1299bff7",
+              "leftValue": "={{ Number.isFinite(Number($json.body?.result?.ingestion_gb || 0)) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "dd55f455-8fa3-4a61-9ea4-e3b1e8a4b485",
+      "name": "Parse alert values",
+      "notes": "Turns Splunk's string values into typed fields and holds the daily threshold. Change threshold_gb here.",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        440,
+        -100
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5f10288b-2c9c-49a2-8068-f569e3dae753",
+              "name": "report_date",
+              "value": "={{ $json.body.result.report_date }}",
+              "type": "string"
+            },
+            {
+              "id": "6ca7d806-4406-40c8-a7e3-56fb0ea19101",
+              "name": "ingestion_gb",
+              "value": "={{ Number($json.body.result.ingestion_gb || 0) }}",
+              "type": "number"
+            },
+            {
+              "id": "fb70ce76-fce5-482f-96fc-9f9597e8eb7b",
+              "name": "threshold_gb",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "4a94644f-7dff-48d3-a5ac-add5a21d641a",
+              "name": "results_link",
+              "value": "={{ /^https?:\\/\\//.test($json.body.results_link ?? '') ? $json.body.results_link : '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "91ed9dc6-d75e-4acb-9615-823ca533ee1b",
+      "name": "Draft Teams message",
+      "notes": "Builds the Teams message (HTML). Edit the wording here.",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        660,
+        -100
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5765feed-27fa-4197-9382-b82ba270d382",
+              "name": "message_html",
+              "value": "=<p><b>Splunk license usage: {{ $json.report_date }}</b></p><p>Ingestion: <b>{{ $json.ingestion_gb.toFixed(2) }} GB</b> ({{ ($json.ingestion_gb / $json.threshold_gb * 100).toFixed(1) }}% of the {{ $json.threshold_gb }} GB daily threshold){{ $json.ingestion_gb > $json.threshold_gb ? '<br>⚠️ <b>Over the ' + $json.threshold_gb + ' GB daily threshold</b>' : '' }}</p>{{ $json.results_link ? '<p><a href=\"' + $json.results_link + '\">Open results in Splunk</a></p>' : '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "1d1b20a8-c82c-4944-a90f-01c3bd40083a",
+      "name": "Post to Teams chat",
+      "webhookId": "79a72da9-2867-45db-922e-d495d2395c34",
+      "disabled": false,
+      "notes": "Needs a Microsoft Teams OAuth2 credential (delegated: posts as the signed-in account). Pick the chat after connecting it.",
+      "type": "n8n-nodes-base.microsoftTeams",
+      "typeVersion": 2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "position": [
+        880,
+        -100
+      ],
+      "parameters": {
+        "authentication": "microsoftTeamsOAuth2Api",
+        "resource": "chatMessage",
+        "operation": "create",
+        "chatId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "contentType": "html",
+        "message": "={{ $json.message_html }}",
+        "options": {
+          "includeLinkToWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "8b06220b-9344-4baf-a027-9136fb5593da",
+      "name": "Respond: posted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1120,
+        -200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'posted', report_date: $('Draft Teams message').item.json.report_date, teams_message_id: $json.id } }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "be5ace7d-4b74-48ec-9de8-6d0a5208c23d",
+      "name": "Respond: Teams post failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'upstream_error', message: 'Posting the message to Microsoft Teams failed. Check the n8n execution for details.' } }}",
+        "options": {
+          "responseCode": 502,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "1d7cf73f-2d46-4385-b896-088d401c4d7d",
+      "name": "Fail: Teams post failed",
+      "notes": "Marks the run as failed so it shows red and triggers the instance's error workflow.",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        0
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=Teams post failed for {{ $('Parse alert values').first().json.report_date }}: {{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'unknown error') }}"
+      }
+    },
+    {
+      "id": "3d57f16e-bd94-4b93-aa20-f4f90218486c",
+      "name": "Respond: invalid payload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        440,
+        160
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'validation_error', message: 'Expected a Splunk webhook alert with result.report_date (YYYY-MM-DD) and a numeric result.ingestion_gb.' } }}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "ed5adb7a-af8c-422a-bebe-4745b4c4e7d0",
+      "name": "Fail: invalid payload",
+      "notes": "Only Splunk should call this webhook, so a bad payload means the daily message was not sent: fail loudly.",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        660,
+        160
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=Invalid Splunk alert payload, so no Teams message was sent. Expected result.report_date as YYYY-MM-DD and a numeric result.ingestion_gb. Received result: {{ JSON.stringify($json.body?.result ?? null).slice(0, 500) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Splunk alert webhook": {
+      "main": [
+        [
+          {
+            "node": "Valid Splunk payload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Splunk payload?": {
+      "main": [
+        [
+          {
+            "node": "Parse alert values",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: invalid payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse alert values": {
+      "main": [
+        [
+          {
+            "node": "Draft Teams message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Teams message": {
+      "main": [
+        [
+          {
+            "node": "Post to Teams chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Teams chat": {
+      "main": [
+        [
+          {
+            "node": "Respond: posted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Teams post failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Teams post failed": {
+      "main": [
+        [
+          {
+            "node": "Fail: Teams post failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: invalid payload": {
+      "main": [
+        [
+          {
+            "node": "Fail: invalid payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
